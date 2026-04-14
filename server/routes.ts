@@ -258,20 +258,6 @@ export function setupRoutes(app: Express, db: Database) {
   syncWebsitesFromSheet(db);
   syncSubmittedNewsFromSheet(db);
 
-  // API: Run News Import (Manual Trigger)
-  app.get('/run-news', async (req, res) => {
-    console.log("Cron triggered");
-    try {
-      const { runManualImport } = await import('./cron.js');
-      const result = await runManualImport(db);
-      console.log("News import done");
-      res.send("News import done");
-    } catch (error) {
-      console.error('Manual trigger failed:', error);
-      res.status(500).send("News import failed");
-    }
-  });
-
   // Admin API: Get Settings
   app.get('/api/admin/settings', (req, res) => {
     try {

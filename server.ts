@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { setupDatabase } from './server/db.js';
 import { setupRoutes } from './server/routes.js';
-import { startCronJobs } from './server/cron.js';
+import { runManualImport } from './server/cron.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,7 +21,20 @@ async function startServer() {
   // Initialize Database
   const db = setupDatabase();
 
-  // Setup API Routes
+  // CRITICAL: Define /run-news BEFORE any static/Vite middleware
+  app.get("/run-news", async (req, res) => {
+    try {
+      console.log("Cron triggered");
+      await runManualImport(db);
+      console.log("News import done");
+      res.json({ success: true, message: "News import done" });
+    } catch (error) {
+      console.error("Manual trigger failed:", error);
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  // Setup other API Routes
   setupRoutes(app, db);
 
   // Background workers are now triggered via /run-news API
