@@ -1,0 +1,5 @@
+{
+  "name": "Remix: News Aggregator RSS FEED",
+  "description": "A complete production-ready News Aggregator Web Application with an Admin Panel, Automatic RSS Feed Finder, News Import Engine, and REST API for a mobile app.",
+  "requestFramePermissions": []
+}
