@@ -69,14 +69,32 @@ export default function NewsList() {
     return source.replace(/\s+News$/i, '').replace(/\s+Times$/i, '').trim();
   };
 
+  const CANONICAL_CATEGORIES = [
+    "All",
+    "Politics",
+    "World",
+    "Crime",
+    "U.S News",
+    "Sports",
+    "Health",
+    "Entertainments",
+    "Business",
+    "Technology"
+  ];
+
   // Extract dynamic filters from all loaded news
   const sources = ["All", ...Array.from(new Set(news.map(item => normalizeSource(item.source))))].sort();
-  const categories = ["All", ...Array.from(new Set(news.map(item => item.category || "General")))].sort();
+  const dynamicCats = Array.from(new Set(news.map(item => item.category || "World")));
+  const categories = Array.from(new Set([...CANONICAL_CATEGORIES, ...dynamicCats]));
 
   // Filtering logic
   const filteredNews = news.filter(item => {
     const sourceMatch = selectedSource === "All" || normalizeSource(item.source) === selectedSource;
-    const categoryMatch = selectedCategory === "All" || (item.category || "General") === selectedCategory;
+    const itemCat = item.category || "World";
+    const categoryMatch = selectedCategory === "All" || 
+      itemCat.toLowerCase() === selectedCategory.toLowerCase() ||
+      (selectedCategory === "U.S News" && (itemCat.toLowerCase() === "us news" || itemCat.toLowerCase() === "u.s. news")) ||
+      (selectedCategory === "Entertainments" && itemCat.toLowerCase() === "entertainment");
     return sourceMatch && categoryMatch;
   });
 

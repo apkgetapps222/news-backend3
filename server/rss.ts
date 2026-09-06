@@ -7,6 +7,9 @@ const parser = new Parser({
     item: [
       ['media:content', 'mediaContent'],
       ['media:thumbnail', 'mediaThumbnail'],
+      ['media:group', 'mediaGroup'],
+      ['itunes:image', 'itunesImage'],
+      ['image', 'image'],
       ['content:encoded', 'contentEncoded'],
       ['description', 'description'],
       ['enclosure', 'enclosure'],
@@ -25,7 +28,7 @@ const COMMON_HEADERS = {
   'Referer': 'https://www.google.com/',
 };
 
-const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1504711434969-e33886168f5c?q=80&w=1000&auto=format&fit=crop';
+export const BREAKING_NEWS_IMAGE = 'https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEgns8GsVMfyX4OZ6ZzVmTpPvw86v4G5ZPNmZUoCvB8ZJjBg3GfrQCorH3YRTXXKABCUl5tgnPR90GjOt71EQEpUhwWhm8id7UBZwRPph9KZkgZV_MeKZPdnK6tUaJr857cHXZCQqn9TwXUBt740AzQD8TGfED2OjZ9Ai3qUP_hhBrDQKMpIdk9vbhIAPTI/s1254/Breaking%20Ic.png';
 
 /**
  * STEP 2: Detect if the URL is a direct RSS/Atom feed
@@ -33,7 +36,7 @@ const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1504711434969-e3388616
 async function isDirectFeed(url: string): Promise<boolean> {
   try {
     const response = await axios.get(url, { 
-      timeout: 30000,
+      timeout: 10000,
       headers: COMMON_HEADERS,
       validateStatus: () => true 
     });
@@ -150,7 +153,7 @@ async function generatePseudoFeed(baseUrl: string) {
           link,
           date: new Date().toISOString(),
           description: '',
-          image: image || FALLBACK_IMAGE,
+          image: image || null,
           categories: []
         });
       }
@@ -179,35 +182,119 @@ export async function findRssFeed(url: string): Promise<string | null> {
 }
 
 /**
- * STEP 4: Extract image (Priority Order)
+ * Extract image from RSS item in priority order.
+ * Returns the image URL if found, or null if not found.
  */
-export function extractImage(item: any): string {
-  // 1. <media:content url="">
-  if (item.mediaContent && item.mediaContent.$ && item.mediaContent.$.url) {
-    return item.mediaContent.$.url;
-  }
-  
-  // 2. <media:thumbnail url="">
-  if (item.mediaThumbnail && item.mediaThumbnail.$ && item.mediaThumbnail.$.url) {
-    return item.mediaThumbnail.$.url;
+export function extractImage(item: any): string | null {
+  // 1. media:content
+  if (item.mediaContent?.$?.url) return item.mediaContent.$.url;
+  if (item.mediaContent?.url) return item.mediaContent.url;
+  if (typeof item.mediaContent === 'string' && item.mediaContent.startsWith('http')) return item.mediaContent;
+
+  // 2. media:thumbnail
+  if (item.mediaThumbnail?.$?.url) return item.mediaThumbnail.$.url;
+  if (item.mediaThumbnail?.url) return item.mediaThumbnail.url;
+  if (typeof item.mediaThumbnail === 'string' && item.mediaThumbnail.startsWith('http')) return item.mediaThumbnail;
+
+  // 3. enclosure
+  if (item.enclosure?.url) {
+    const url = item.enclosure.url;
+    const type = (item.enclosure.type || '').toLowerCase();
+    if (!type.includes('audio') && !type.includes('video') && !url.endsWith('.mp3')) {
+      return url;
+    }
   }
 
-  // 3. <enclosure url="">
-  if (item.enclosure && item.enclosure.url) {
-    return item.enclosure.url;
-  }
-  
-  // 4. <img src=""> inside description/content
-  // 5. <content:encoded> images
-  const content = item.contentEncoded || item.content || item.description || '';
-  const imgRegex = /<img[^>]+src="([^">]+)"/g;
-  const match = imgRegex.exec(content);
-  if (match && match[1]) {
-    return match[1];
+  // 4. media:group
+  if (item.mediaGroup) {
+    const mgContent = item.mediaGroup['media:content'] || item.mediaGroup.mediaContent;
+    if (Array.isArray(mgContent) && mgContent[0]?.$?.url) return mgContent[0].$.url;
+    if (mgContent?.$?.url) return mgContent.$.url;
+
+    const mgThumb = item.mediaGroup['media:thumbnail'] || item.mediaGroup.mediaThumbnail;
+    if (Array.isArray(mgThumb) && mgThumb[0]?.$?.url) return mgThumb[0].$.url;
+    if (mgThumb?.$?.url) return mgThumb.$.url;
   }
 
-  // Fallback image
-  return FALLBACK_IMAGE;
+  // 5. itunesImage
+  if (item.itunesImage?.$?.href) return item.itunesImage.$.href;
+  if (typeof item.itunesImage === 'string' && item.itunesImage.startsWith('http')) return item.itunesImage;
+
+  // 6. item.image
+  if (item.image?.url) return item.image.url;
+  if (typeof item.image === 'string' && item.image.startsWith('http')) return item.image;
+
+  // 7. <img src=""> inside contentEncoded or description or content
+  const content = [
+    item.contentEncoded,
+    item.content,
+    item.description,
+    item.summary
+  ].filter(Boolean).join(' ');
+
+  const imgRegex = /<img[^>]+(?:src|data-src|data-original|data-lazy-src)=["']([^"']+)["']/gi;
+  let match;
+  while ((match = imgRegex.exec(content)) !== null) {
+    const src = match[1];
+    if (
+      src &&
+      (src.startsWith('http://') || src.startsWith('https://')) &&
+      !src.includes('1x1') &&
+      !src.includes('feedburner.com') &&
+      !src.includes('feedsportal.com') &&
+      !src.includes('doubleclick.net') &&
+      !src.includes('pixel') &&
+      !src.endsWith('.gif')
+    ) {
+      return src;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Fetches the article webpage to extract og:image or twitter:image.
+ * Used as fallback when RSS item lacks an image.
+ */
+export async function fetchOgImage(articleUrl: string): Promise<string | null> {
+  if (!articleUrl || !articleUrl.startsWith('http')) return null;
+  try {
+    const response = await axios.get(articleUrl, {
+      headers: COMMON_HEADERS,
+      timeout: 3000,
+      validateStatus: (status) => status < 400,
+      maxContentLength: 150000, // Read only the first 150KB for speed
+      responseType: 'text'
+    });
+
+    const html = typeof response.data === 'string' ? response.data : '';
+    if (!html) return null;
+
+    // Search for og:image
+    const ogMatch = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
+                    html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+    if (ogMatch && ogMatch[1] && ogMatch[1].startsWith('http')) {
+      return ogMatch[1];
+    }
+
+    // Search for twitter:image
+    const twMatch = html.match(/<meta[^>]+(?:name|property)=["']twitter:image["'][^>]+content=["']([^"']+)["']/i) ||
+                    html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+(?:name|property)=["']twitter:image["']/i);
+    if (twMatch && twMatch[1] && twMatch[1].startsWith('http')) {
+      return twMatch[1];
+    }
+
+    // Search for link rel="image_src"
+    const linkMatch = html.match(/<link[^>]+rel=["']image_src["'][^>]+href=["']([^"']+)["']/i);
+    if (linkMatch && linkMatch[1] && linkMatch[1].startsWith('http')) {
+      return linkMatch[1];
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -219,7 +306,7 @@ export async function fetchFeedArticles(url: string) {
   try {
     const response = await axios.get(url, { 
       headers: COMMON_HEADERS,
-      timeout: 30000 
+      timeout: 10000 
     });
     
     const body = response.data.toString();
