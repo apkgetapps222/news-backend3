@@ -420,6 +420,59 @@ export function setupRoutes(app: Express, db: Database) {
     }
   });
 
+  // Helper: Normalize URL for duplicate comparison (removes protocol, www, trailing slashes)
+  function normalizeUrlForCompare(rawUrl: string | null | undefined): string {
+    if (!rawUrl) return '';
+    let u = rawUrl.trim().toLowerCase();
+    u = u.replace(/^https?:\/\//i, '');
+    u = u.replace(/^www\./i, '');
+    u = u.replace(/\/+$/, '');
+    return u;
+  }
+
+  // Helper: Check if a URL or RSS feed already exists in the websites table
+  function findExistingWebsiteByUrl(db: Database, testUrl: string, excludeId?: number | string): any | null {
+    if (!testUrl) return null;
+    const normalizedTest = normalizeUrlForCompare(testUrl);
+    if (!normalizedTest) return null;
+
+    const websites = db.prepare('SELECT id, name, url, rss_url, category, country, status FROM websites').all() as any[];
+    for (const site of websites) {
+      if (excludeId && String(site.id) === String(excludeId)) continue;
+      const siteUrlNorm = normalizeUrlForCompare(site.url);
+      const siteRssNorm = normalizeUrlForCompare(site.rss_url);
+
+      if (siteUrlNorm && siteUrlNorm === normalizedTest) {
+        return { ...site, matchedField: 'url', matchedUrl: site.url };
+      }
+      if (siteRssNorm && siteRssNorm === normalizedTest) {
+        return { ...site, matchedField: 'rss_url', matchedUrl: site.rss_url };
+      }
+    }
+    return null;
+  }
+
+  // Admin API: Check if URL already exists in database
+  app.get('/api/admin/websites/check-duplicate', (req, res) => {
+    const testUrl = req.query.url as string;
+    if (!testUrl) {
+      return res.json({ alreadyExists: false });
+    }
+    try {
+      const existing = findExistingWebsiteByUrl(db, testUrl);
+      if (existing) {
+        return res.json({
+          alreadyExists: true,
+          existingWebsite: existing,
+          message: `Already Added! This URL is already registered under "${existing.name}".`
+        });
+      }
+      return res.json({ alreadyExists: false });
+    } catch (error) {
+      return res.json({ alreadyExists: false });
+    }
+  });
+
   // Admin API: Add Website
   app.post('/api/admin/websites', async (req, res) => {
     const { name, url, category, country, status } = req.body;
@@ -429,19 +482,50 @@ export function setupRoutes(app: Express, db: Database) {
     }
 
     try {
-      const rssUrl = await findRssFeed(url);
-      let articles: any[] = [];
-      if (rssUrl) {
-        articles = await fetchFeedArticles(rssUrl);
-      } else {
-        // If no RSS found, try pseudo-feed from the provided URL
-        articles = await fetchFeedArticles(url);
+      let cleanUrl = url.trim();
+      if (!/^https?:\/\//i.test(cleanUrl)) {
+        cleanUrl = `https://${cleanUrl}`;
+      }
+
+      // STEP 1: Check if the entered URL already matches an existing website URL or RSS feed
+      const existingByEnteredUrl = findExistingWebsiteByUrl(db, cleanUrl);
+      if (existingByEnteredUrl) {
+        console.log(`[AddWebsite] Duplicate detected for URL ${cleanUrl}: already exists as ${existingByEnteredUrl.name} (#${existingByEnteredUrl.id})`);
+        return res.status(409).json({
+          error: `Already Added! This website URL is already in your website list under "${existingByEnteredUrl.name}".`,
+          alreadyExists: true,
+          existingWebsite: existingByEnteredUrl
+        });
+      }
+
+      // STEP 2: Detect RSS Feed URL
+      const rssUrl = await findRssFeed(cleanUrl);
+      const targetFetchUrl = rssUrl || cleanUrl;
+
+      // STEP 3: Check if detected RSS feed URL already matches an existing website URL or RSS feed
+      if (targetFetchUrl) {
+        const existingByRss = findExistingWebsiteByUrl(db, targetFetchUrl);
+        if (existingByRss) {
+          console.log(`[AddWebsite] Duplicate detected for detected RSS feed ${targetFetchUrl}: already exists as ${existingByRss.name} (#${existingByRss.id})`);
+          return res.status(409).json({
+            error: `Already Added! This RSS feed URL (${targetFetchUrl}) is already in your website list under "${existingByRss.name}".`,
+            alreadyExists: true,
+            existingWebsite: existingByRss
+          });
+        }
+      }
+
+      let articles = await fetchFeedArticles(targetFetchUrl);
+
+      // If no articles returned from detected rssUrl, try original cleanUrl
+      if (articles.length === 0 && rssUrl && rssUrl !== cleanUrl) {
+        articles = await fetchFeedArticles(cleanUrl);
       }
       
       const websiteData = {
         name,
-        url,
-        rss_url: rssUrl || url, // Store the original URL as rss_url if no RSS found (it will use pseudo-feed)
+        url: cleanUrl,
+        rss_url: rssUrl || cleanUrl,
         category: category || 'General',
         country: country || 'Global',
         status: status || 'Active'
@@ -545,6 +629,27 @@ export function setupRoutes(app: Express, db: Database) {
     const { name, url, rss_url, category, country, status } = req.body;
     
     try {
+      if (url) {
+        const existingUrl = findExistingWebsiteByUrl(db, url, id);
+        if (existingUrl) {
+          return res.status(409).json({
+            error: `Already Added! This URL is already used by "${existingUrl.name}".`,
+            alreadyExists: true,
+            existingWebsite: existingUrl
+          });
+        }
+      }
+      if (rss_url) {
+        const existingRss = findExistingWebsiteByUrl(db, rss_url, id);
+        if (existingRss) {
+          return res.status(409).json({
+            error: `Already Added! This RSS URL is already used by "${existingRss.name}".`,
+            alreadyExists: true,
+            existingWebsite: existingRss
+          });
+        }
+      }
+
       db.prepare(`
         UPDATE websites
         SET name = ?, url = ?, rss_url = ?, category = ?, country = ?, status = ?

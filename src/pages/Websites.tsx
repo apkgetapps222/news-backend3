@@ -64,11 +64,12 @@ export default function Websites() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(editForm),
       });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
         setEditingWebsite(null);
         fetchWebsites();
       } else {
-        alert('Failed to update website');
+        alert(data.error || 'Failed to update website');
       }
     } catch (error) {
       console.error('Failed to update website');

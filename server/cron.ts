@@ -1,20 +1,38 @@
 import cron from 'node-cron';
 import { Database } from 'better-sqlite3';
-import { fetchFeedArticles, fetchOgImage, BREAKING_NEWS_IMAGE } from './rss.js';
+import { fetchFeedArticles, fetchOgImage, BREAKING_NEWS_IMAGE, isValidNewsArticle } from './rss.js';
 import { getCategories, matchCategory, normalizeCategory } from './categories.js';
 import { submitNewsToSheet } from './sheet.js';
 
 const seenUrls = new Set<string>();
 const seenTitles = new Set<string>();
+let isCacheLoaded = false;
+
+function ensureDeduplicationCache(db: Database) {
+  if (isCacheLoaded) return;
+  try {
+    const existing = db.prepare('SELECT article_url, title FROM news').all() as { article_url: string; title: string }[];
+    for (const row of existing) {
+      if (row.article_url) seenUrls.add(row.article_url);
+      if (row.title) seenTitles.add(row.title.toLowerCase().trim());
+    }
+    isCacheLoaded = true;
+    console.log(`[Deduplication] Initialized cache with ${seenUrls.size} existing articles.`);
+  } catch (e) {
+    console.warn('[Deduplication] Could not prefill cache:', e);
+  }
+}
 
 /**
  * Fetches news from a website and saves to database if not already present.
  * Does NOT submit to Google Sheets.
  */
 export async function importNewsForWebsite(db: Database, website: any, allowedCategories: string[]) {
-  console.log(`[Fetch] Processing ${website.name} (${website.rss_url})`);
+  ensureDeduplicationCache(db);
+  const targetUrl = website.rss_url || website.url;
+  console.log(`[Fetch] Processing ${website.name} (${targetUrl})`);
   try {
-    const articles = await fetchFeedArticles(website.rss_url);
+    const articles = await fetchFeedArticles(targetUrl);
     let count = 0;
     let noImageStreak = 0;
     
@@ -22,6 +40,12 @@ export async function importNewsForWebsite(db: Database, website: any, allowedCa
       const articleUrl = item.link;
       const title = item.title;
       if (!articleUrl || !title) continue;
+
+      // Quality validation: Reject junk, social media widgets, raw URLs, and dates
+      if (!isValidNewsArticle(title, articleUrl)) {
+        console.log(`[Fetch] Filtered out invalid/junk item for ${website.name}: "${title}" (${articleUrl})`);
+        continue;
+      }
 
       // Duplicate prevention: Check in-memory Set first
       if (seenUrls.has(articleUrl) || seenTitles.has(title.toLowerCase().trim())) {
@@ -175,13 +199,22 @@ export async function runNewsSubmit(db: Database) {
 
   try {
     isSubmitting = true;
+    // Fair Multi-Source Round-Robin Distribution:
+    // Interleaves unsubmitted articles across ALL active website sources:
+    // Round 1 takes 1st news from each site, Round 2 takes 2nd news, Round 3 takes 3rd news, etc.
+    // This ensures ALL news (whether a site has 2, 5, or 8 articles) gets completely submitted
+    // while maintaining a diverse, balanced feed in Google Sheets without spamming one source.
     const pendingNews = db.prepare(`
-      SELECT n.*, w.name as source 
-      FROM news n 
-      JOIN websites w ON n.source_id = w.id 
-      WHERE n.submitted = 0 
-      ORDER BY n.publish_date DESC 
-      LIMIT 20
+      WITH RankedPending AS (
+        SELECT n.*, w.name as source,
+               ROW_NUMBER() OVER (PARTITION BY n.source_id ORDER BY n.publish_date DESC) as rank
+        FROM news n 
+        JOIN websites w ON n.source_id = w.id 
+        WHERE n.submitted = 0 AND w.status = 'Active'
+      )
+      SELECT * FROM RankedPending 
+      ORDER BY rank ASC, publish_date DESC 
+      LIMIT 200
     `).all() as any[];
 
     if (pendingNews.length === 0) {
@@ -189,7 +222,7 @@ export async function runNewsSubmit(db: Database) {
       return { success: true, submitted: 0 };
     }
 
-    console.log(`[Submit] Submitting ${pendingNews.length} pending articles to Google Sheets...`);
+    console.log(`[Submit] Submitting ${pendingNews.length} pending articles across sources to Google Sheets...`);
     let submittedCount = 0;
     for (const newsItem of pendingNews) {
       try {

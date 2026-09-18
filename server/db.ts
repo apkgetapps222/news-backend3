@@ -61,10 +61,10 @@ export function setupDatabase() {
     db.prepare('UPDATE settings SET value = ? WHERE key = ?').run('ON', 'autoSubmit');
   }
 
-  // Initialize max_description_words setting if not exists
+  // Initialize max_description_words setting to 100 words default
   const maxWords = db.prepare('SELECT value FROM settings WHERE key = ?').get('max_description_words');
   if (!maxWords) {
-    db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('max_description_words', '150');
+    db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('max_description_words', '100');
   }
 
   // Initialize news_webhook_url setting if not exists

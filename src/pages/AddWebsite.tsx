@@ -1,12 +1,30 @@
 import { useState, useEffect, ChangeEvent, FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Loader2 } from 'lucide-react';
+import { Search, Loader2, AlertTriangle, XCircle, ArrowRight, ExternalLink } from 'lucide-react';
+
+interface ExistingWebsiteInfo {
+  id?: number;
+  name: string;
+  url: string;
+  rss_url?: string;
+  category?: string;
+  country?: string;
+  status?: string;
+  matchedField?: string;
+  matchedUrl?: string;
+}
 
 export default function AddWebsite() {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [categories, setCategories] = useState<string[]>([]);
+  const [checkingDuplicate, setCheckingDuplicate] = useState(false);
+  
+  const [duplicateWarning, setDuplicateWarning] = useState<{
+    message: string;
+    existingWebsite: ExistingWebsiteInfo;
+  } | null>(null);
   
   const [formData, setFormData] = useState({
     name: '',
@@ -32,7 +50,36 @@ export default function AddWebsite() {
   }, []);
 
   const handleChange = (e: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
+    const { name, value } = e.target;
+    setFormData(prev => ({ ...prev, [name]: value }));
+    
+    // Clear duplicate warning when user edits the URL
+    if (name === 'url' && duplicateWarning) {
+      setDuplicateWarning(null);
+      setError('');
+    }
+  };
+
+  // Quick real-time check when user finishes typing URL (onBlur)
+  const handleUrlBlur = async () => {
+    const trimmed = formData.url.trim();
+    if (!trimmed || trimmed.length < 6) return;
+
+    try {
+      setCheckingDuplicate(true);
+      const res = await fetch(`/api/admin/websites/check-duplicate?url=${encodeURIComponent(trimmed)}`);
+      const data = await res.json();
+      if (data.alreadyExists && data.existingWebsite) {
+        setDuplicateWarning({
+          message: data.message || `Already Added! This website URL is already in your website list under "${data.existingWebsite.name}".`,
+          existingWebsite: data.existingWebsite
+        });
+      }
+    } catch {
+      // Ignore network blur errors
+    } finally {
+      setCheckingDuplicate(false);
+    }
   };
 
   const [previewData, setPreviewData] = useState<{ rssUrl: string; articles: any[] } | null>(null);
@@ -41,6 +88,7 @@ export default function AddWebsite() {
     e.preventDefault();
     setLoading(true);
     setError('');
+    setDuplicateWarning(null);
 
     try {
       const response = await fetch('/api/admin/websites', {
@@ -52,6 +100,14 @@ export default function AddWebsite() {
       const data = await response.json();
 
       if (!response.ok) {
+        // If website or RSS is duplicate
+        if (data.alreadyExists && data.existingWebsite) {
+          setDuplicateWarning({
+            message: data.error || `Already Added! This website or RSS feed URL is already present in your list.`,
+            existingWebsite: data.existingWebsite
+          });
+          return;
+        }
         throw new Error(data.error || 'Failed to add website');
       }
 
@@ -92,10 +148,13 @@ export default function AddWebsite() {
               {previewData.articles.map((article, idx) => (
                 <div key={idx} className="flex gap-4 p-4 bg-gray-50 rounded-lg border border-gray-100">
                   <img 
-                    src={article.image} 
+                    src={article.image || 'https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEgns8GsVMfyX4OZ6ZzVmTpPvw86v4G5ZPNmZUoCvB8ZJjBg3GfrQCorH3YRTXXKABCUl5tgnPR90GjOt71EQEpUhwWhm8id7UBZwRPph9KZkgZV_MeKZPdnK6tUaJr857cHXZCQqn9TwXUBt740AzQD8TGfED2OjZ9Ai3qUP_hhBrDQKMpIdk9vbhIAPTI/s1254/Breaking%20Ic.png'} 
                     alt="" 
-                    className="w-20 h-20 object-cover rounded-md flex-shrink-0"
+                    className="w-20 h-20 object-cover rounded-md flex-shrink-0 bg-gray-200"
                     referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).src = 'https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEgns8GsVMfyX4OZ6ZzVmTpPvw86v4G5ZPNmZUoCvB8ZJjBg3GfrQCorH3YRTXXKABCUl5tgnPR90GjOt71EQEpUhwWhm8id7UBZwRPph9KZkgZV_MeKZPdnK6tUaJr857cHXZCQqn9TwXUBt740AzQD8TGfED2OjZ9Ai3qUP_hhBrDQKMpIdk9vbhIAPTI/s1254/Breaking%20Ic.png';
+                    }}
                   />
                   <div className="flex-1 min-w-0">
                     <h3 className="text-sm font-medium text-gray-900 line-clamp-2">{article.title}</h3>
@@ -121,7 +180,99 @@ export default function AddWebsite() {
 
       <div className="bg-white shadow-sm rounded-xl border border-gray-200 overflow-hidden">
         <form onSubmit={handleSubmit} className="p-6 sm:p-8 space-y-6">
-          {error && (
+          {duplicateWarning && (
+            <div id="duplicate-url-notifier" className="bg-amber-50 border-2 border-amber-400 rounded-xl p-5 shadow-sm space-y-3 animate-fadeIn">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 bg-amber-100 text-amber-700 rounded-lg flex-shrink-0 mt-0.5">
+                    <AlertTriangle className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold uppercase tracking-wider bg-amber-200 text-amber-900 border border-amber-300">
+                        ALREADY ADDED
+                      </span>
+                      <span className="text-xs text-amber-700 font-medium">Duplicate RSS Feed URL Prevented</span>
+                    </div>
+                    <h3 className="text-base font-bold text-amber-950 mt-1">
+                      This Website / RSS Feed is already registered
+                    </h3>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDuplicateWarning(null)}
+                  className="text-amber-500 hover:text-amber-800 p-1 rounded-md transition-colors"
+                  title="Dismiss warning"
+                >
+                  <XCircle className="w-5 h-5" />
+                </button>
+              </div>
+
+              <p className="text-sm text-amber-900 leading-relaxed font-medium">
+                {duplicateWarning.message}
+              </p>
+
+              {/* Existing website info box */}
+              <div className="bg-white/90 border border-amber-200 rounded-lg p-3.5 space-y-2 text-sm shadow-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <span className="text-xs text-gray-500 font-medium uppercase tracking-wider block">Existing Entry Name</span>
+                    <span className="font-bold text-gray-900 text-base">{duplicateWarning.existingWebsite.name}</span>
+                  </div>
+                  {duplicateWarning.existingWebsite.category && (
+                    <span className="inline-block text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded font-medium border border-gray-200">
+                      Category: {duplicateWarning.existingWebsite.category}
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2 border-t border-amber-100 text-xs">
+                  <div className="truncate">
+                    <span className="text-gray-500 block font-medium">Website URL:</span>
+                    <a
+                      href={duplicateWarning.existingWebsite.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-indigo-600 hover:underline inline-flex items-center gap-1 font-mono truncate max-w-full"
+                    >
+                      <span className="truncate">{duplicateWarning.existingWebsite.url}</span>
+                      <ExternalLink className="w-3 h-3 flex-shrink-0" />
+                    </a>
+                  </div>
+                  <div className="truncate">
+                    <span className="text-gray-500 block font-medium">RSS Feed URL:</span>
+                    <span className="text-amber-900 font-mono truncate block" title={duplicateWarning.existingWebsite.rss_url || duplicateWarning.existingWebsite.url}>
+                      {duplicateWarning.existingWebsite.rss_url || duplicateWarning.existingWebsite.url}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3 pt-1">
+                <button
+                  type="button"
+                  onClick={() => navigate('/websites')}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg shadow-sm transition-colors"
+                >
+                  View in Websites List
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDuplicateWarning(null);
+                    setFormData(prev => ({ ...prev, url: '' }));
+                  }}
+                  className="px-3.5 py-1.5 bg-white border border-amber-300 text-amber-900 hover:bg-amber-100/50 text-sm font-medium rounded-lg transition-colors"
+                >
+                  Clear & Try Another URL
+                </button>
+              </div>
+            </div>
+          )}
+
+          {error && !duplicateWarning && (
             <div className="bg-red-50 border-l-4 border-red-400 p-4 rounded-md">
               <div className="flex">
                 <div className="flex-shrink-0">
@@ -154,7 +305,14 @@ export default function AddWebsite() {
             </div>
 
             <div className="sm:col-span-2">
-              <label htmlFor="url" className="block text-sm font-medium text-gray-700">Website URL</label>
+              <div className="flex items-center justify-between">
+                <label htmlFor="url" className="block text-sm font-medium text-gray-700">Website URL</label>
+                {checkingDuplicate && (
+                  <span className="text-xs text-indigo-600 flex items-center gap-1 font-medium">
+                    <Loader2 className="w-3 h-3 animate-spin" /> Checking duplicates...
+                  </span>
+                )}
+              </div>
               <div className="mt-1">
                 <input
                   type="url"
@@ -163,13 +321,25 @@ export default function AddWebsite() {
                   required
                   value={formData.url}
                   onChange={handleChange}
-                  className="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md p-2 border"
+                  onBlur={handleUrlBlur}
+                  className={`shadow-sm block w-full sm:text-sm rounded-md p-2 border transition-all ${
+                    duplicateWarning 
+                      ? 'border-amber-400 ring-2 ring-amber-300 bg-amber-50/40 text-amber-900 focus:ring-amber-500 focus:border-amber-500'
+                      : 'border-gray-300 focus:ring-indigo-500 focus:border-indigo-500'
+                  }`}
                   placeholder="https://techcrunch.com"
                 />
               </div>
-              <p className="mt-2 text-sm text-gray-500">
-                We will automatically scan this URL for RSS feeds (/feed, /rss, /rss.xml, etc.)
-              </p>
+              {duplicateWarning ? (
+                <p className="mt-2 text-xs text-amber-800 font-semibold flex items-center gap-1">
+                  <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 text-amber-600" />
+                  This URL or RSS feed already exists in your database list!
+                </p>
+              ) : (
+                <p className="mt-2 text-sm text-gray-500">
+                  We will automatically scan this URL for RSS feeds (/feed, /rss, /rss.xml, etc.)
+                </p>
+              )}
             </div>
 
             <div>

@@ -19,7 +19,7 @@ export default function Dashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [settings, setSettings] = useState<Settings>({ 
     auto_submit: 'OFF', 
-    max_description_words: '150',
+    max_description_words: '100',
     news_webhook_url: ''
   });
   const [loading, setLoading] = useState(true);

@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { Database } from 'better-sqlite3';
+import { isValidNewsArticle, BANNED_LINK_DOMAINS } from './rss.js';
 
 const NEWS_SUBMIT_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbz4rb-pSfIGM0F6805VgUW80pfVdNwqxkNlX4q4j71dfF7ahz3d8u4YRZSPaEgYTzBo/exec";
 const NEWS_WEBHOOK_URL = process.env.NEWS_SUBMIT_WEBHOOK_URL || process.env.GOOGLE_SHEET_WEBHOOK_URL || NEWS_SUBMIT_WEBHOOK_URL;
@@ -10,6 +11,18 @@ function processDescription(description: string, headline: string, maxWords: num
   if (!processed) {
     processed = headline;
   }
+
+  // Clean HTML tags and decode common entities for clean Google Sheets display
+  processed = processed
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\s+/g, ' ')
+    .trim();
 
   // Split into words and trim if exceeds maxWords
   const words = processed.split(/\s+/).filter(w => w.length > 0);
@@ -67,9 +80,16 @@ async function performSubmission(db: Database, newsItem: any) {
       return true;
     }
 
-    // Get max description words from settings
+    // Quality Gatekeeper: Strictly block twitter widgets, pic.twitter.com, standalone dates, and boilerplate
+    if (!isValidNewsArticle(newsItem.title, newsItem.article_url)) {
+      console.warn(`[Sheet Guard] Blocked junk/social item from Google Sheet: "${newsItem.title}" (${newsItem.article_url})`);
+      db.prepare('UPDATE news SET submitted = -1 WHERE id = ?').run(newsItem.id);
+      return true;
+    }
+
+    // Get max description words from settings (default 100 words)
     const maxWordsSetting = db.prepare('SELECT value FROM settings WHERE key = ?').get('max_description_words') as { value: string } | undefined;
-    const maxWords = parseInt(maxWordsSetting?.value || '150');
+    const maxWords = parseInt(maxWordsSetting?.value || '100');
 
     // Get source name if not provided
     let sourceName = newsItem.source;
@@ -85,6 +105,13 @@ async function performSubmission(db: Database, newsItem: any) {
       }
     } catch (e) {
       console.warn('Failed to parse domain from URL:', newsItem.article_url);
+    }
+
+    // Domain Gatekeeper: Never allow t.co, twitter.com, x.com etc. as a news source domain
+    if (BANNED_LINK_DOMAINS.some(d => sourceDomain === d || sourceDomain.endsWith(`.${d}`))) {
+      console.warn(`[Sheet Guard] Blocked article with banned domain "${sourceDomain}": "${newsItem.title}"`);
+      db.prepare('UPDATE news SET submitted = -1 WHERE id = ?').run(newsItem.id);
+      return true;
     }
 
     const processedDescription = processDescription(newsItem.description, newsItem.title, maxWords);
